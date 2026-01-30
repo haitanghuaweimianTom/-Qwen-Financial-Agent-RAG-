@@ -72,7 +72,7 @@ duckduckgo-search
 启动 Streamlit 服务：
 
 ```bash
-streamlit run app.py
+streamlit run 金融agent.py
 ```
 
 ### 4. 配置 API Key
@@ -96,4 +96,4 @@ streamlit run app.py
 - [SiliconFlow](https://siliconflow.cn/) 提供稳定的 API 服务。
 
 ---
-*Created by [你的名字] | 2026*
+*Created by [Tom] | 2026*
