@@ -1,0 +1,5 @@
+streamlit>=1.30.0
+akshare>=1.12.90
+openai>=1.10.0
+pandas>=2.0.0
+duckduckgo-search>=5.0.0
