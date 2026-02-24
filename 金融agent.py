@@ -73,7 +73,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "查美股、宏观经济、黄金走势、外盘数据。参数 query 为搜索词。",
+            "description": "联网搜索引擎。当用户询问专业知识、最新资讯、外盘数据或你需要联网检索外部数据以辅助回答时调用。参数 query 为搜索词。",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
         }
     }
@@ -106,14 +106,18 @@ if prompt := st.chat_input("试试问：'美股黄金最近怎么走？'"):
 
     with st.chat_message("assistant"):
         # 构造消息
-        msgs = [{"role": "system", "content": "你是专业投研助手。A股问题调get_stock_price，美股/宏观问题调search_web。"}]
+        system_content = (
+            "你是专业投研助手。A股问题调用get_stock_price_pro；"
+            "遇到需要实时信息、专业知识或非A股数据时，调用search_web联网搜索。"
+        )
+        msgs = [{"role": "system", "content": system_content}]
         for m in st.session_state.messages:
             if isinstance(m, dict): msgs.append(m)
             else: msgs.append(m.model_dump())
 
         # 调用
         resp = client.chat.completions.create(
-            model="Qwen/Qwen2.5-72B-Instruct",
+            model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
             messages=msgs,
             tools=tools_schema
         )
@@ -144,7 +148,7 @@ if prompt := st.chat_input("试试问：'美股黄金最近怎么走？'"):
             msgs.append(msg.model_dump())
             msgs.append({"role": "tool", "content": res, "tool_call_id": call.id})
             
-            final = client.chat.completions.create(model="Qwen/Qwen2.5-72B-Instruct", messages=msgs)
+            final = client.chat.completions.create(model="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B", messages=msgs)
             reply = final.choices[0].message.content
             st.write(reply)
             st.session_state.messages.append({"role": "assistant", "content": reply})
