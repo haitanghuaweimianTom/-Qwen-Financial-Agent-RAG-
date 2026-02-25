@@ -3,7 +3,7 @@ import akshare as ak
 import json
 import pandas as pd
 from openai import OpenAI
-from duckduckgo_search import DDGS  # 记得 pip install duckduckgo-search
+from tavily import TavilyClient
 
 # ================= 1. 页面配置 =================
 st.set_page_config(page_title="AI全能投研助手", page_icon="🌍", layout="wide")
@@ -41,13 +41,14 @@ def get_stock_news(symbol):
         return json.dumps([f"{row['发布时间']} {row['新闻标题']}" for _, row in news.iterrows()], ensure_ascii=False)
     except: return "无最新公告"
 
-def search_web(query):
+def search_web(query, tavily_api_key):
     """🌍 查外网/美股"""
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
-            if not results: return "无搜索结果"
-            return "\n\n".join([f"标题: {r['title']}\n内容: {r['body']}" for r in results])
+        tavily_client = TavilyClient(api_key=tavily_api_key)
+        result = tavily_client.search(query=query)
+        results = result.get("results", [])
+        if not results: return "无搜索结果"
+        return "\n\n".join([f"标题: {r['title']}\n内容: {r['content']}" for r in results])
     except Exception as e:
         return f"搜索报错: {e}"
 
@@ -84,7 +85,9 @@ tools_schema = [
 st.title("🌍 AI全能投研助手 (联网版)")
 
 with st.sidebar:
-    api_key = st.text_input("API Key", type="password")
+    api_key = st.text_input("SiliconFlow API Key", type="password")
+    tavily_api_key = st.text_input("Tavily API Key", type="password")
+    force_search = st.toggle("🌍 强制联网 (Doubao模式)", value=False)
     if st.button("清空"): st.session_state.messages = []; st.rerun()
 
 if not api_key: st.stop()
@@ -105,49 +108,95 @@ if prompt := st.chat_input("试试问：'美股黄金最近怎么走？'"):
     st.chat_message("user").write(prompt)
 
     with st.chat_message("assistant"):
-        # 构造消息
-        msgs = [{"role": "system", "content": "你是专业投研助手。A股问题调get_stock_price，美股/宏观问题调search_web。"}]
-        for m in st.session_state.messages:
-            if isinstance(m, dict): msgs.append(m)
-            else: msgs.append(m.model_dump())
+        if force_search:
+            # --- The "Doubao" Strict RAG Pipeline ---
+            with st.status("🌍 强制联网检索中...") as s:
+                st.write(f"正在搜索: {prompt}")
+                search_result = search_web(prompt, tavily_api_key)
+                s.update(label="✅ 检索完毕", state="complete")
 
-        # 调用
-        resp = client.chat.completions.create(
-            model="Qwen/Qwen2.5-72B-Instruct",
-            messages=msgs,
-            tools=tools_schema
-        )
-        msg = resp.choices[0].message
+            # Display search context (optional, for transparency)
+            with st.expander("📄 查看搜索参考内容"):
+                st.markdown(search_result)
 
-        if msg.tool_calls:
-            st.session_state.messages.append(msg)
-            
-            with st.status("🔍 联网检索中...") as s:
-                call = msg.tool_calls[0]
-                fname = call.function.name
-                args = json.loads(call.function.arguments)
-                
-                # 统一参数提取
-                val = args.get("symbol") or args.get("query")
-                st.write(f"调取工具: {fname} | 关键词: {val}")
-                
-                if fname == "search_web": res = search_web(val)
-                elif fname == "get_stock_price_pro": res = get_stock_price_pro(val)
-                elif fname == "get_stock_news": res = get_stock_news(val)
-                else: res = "Error"
-                
-                s.update(label="数据已获取", state="complete")
-            
-            st.session_state.messages.append({"role": "tool", "content": res, "tool_call_id": call.id})
-            
-            # 最终回答
-            msgs.append(msg.model_dump())
-            msgs.append({"role": "tool", "content": res, "tool_call_id": call.id})
-            
-            final = client.chat.completions.create(model="Qwen/Qwen2.5-72B-Instruct", messages=msgs)
-            reply = final.choices[0].message.content
+            # Inject context into prompt
+            system_content = f"""你是一个严谨的投研助手。
+请**严格基于以下搜索结果**回答用户的问题。
+如果搜索结果中没有相关信息，请直接回答"根据最新检索，未找到相关信息"，**绝对禁止**凭空编造任何数据或事实。
+
+【搜索结果参考】：
+{search_result}
+"""
+            msgs = [{"role": "system", "content": system_content}]
+            for m in st.session_state.messages[:-1]:  # Exclude the current prompt
+                if isinstance(m, dict): msgs.append(m)
+                else: msgs.append(m.model_dump())
+            msgs.append({"role": "user", "content": prompt})
+
+            # Single LLM call to summarize
+            resp = client.chat.completions.create(
+                model="Qwen/Qwen2.5-72B-Instruct",
+                messages=msgs,
+                temperature=0.1
+            )
+            reply = resp.choices[0].message.content
             st.write(reply)
             st.session_state.messages.append({"role": "assistant", "content": reply})
+
         else:
-            st.write(msg.content)
-            st.session_state.messages.append({"role": "assistant", "content": msg.content})
+            # --- Standard Agent Pipeline (for A-share tools & optional search) ---
+            system_content = "你是专业、严谨的投研助手。A股价格必须调用 get_stock_price_pro；遇到需要实时信息、专业知识或非A股数据时，请务必调用 search_web 联网搜索以确保准确性。"
+            msgs = [{"role": "system", "content": system_content}]
+            for m in st.session_state.messages:
+                if isinstance(m, dict): msgs.append(m)
+                else: msgs.append(m.model_dump())
+
+            resp = client.chat.completions.create(
+                model="Qwen/Qwen2.5-72B-Instruct",
+                messages=msgs,
+                tools=tools_schema,
+                temperature=0.1
+            )
+            msg = resp.choices[0].message
+
+            if msg.tool_calls:
+                st.session_state.messages.append(msg)
+                with st.status("🔍 触发智能工具...") as s:
+                    call = msg.tool_calls[0]
+                    fname = call.function.name
+
+                    try:
+                        args = json.loads(call.function.arguments)
+                    except Exception:
+                        args = {"query": prompt, "symbol": prompt}
+
+                    val = args.get("symbol") or args.get("query") or prompt
+                    st.write(f"🔧 正在执行: `{fname}` | 关键词: `{val}`")
+
+                    if fname == "search_web":
+                        res = search_web(val, tavily_api_key)
+                    elif fname == "get_stock_price_pro":
+                        res = get_stock_price_pro(val)
+                    elif fname == "get_stock_news":
+                        res = get_stock_news(val)
+                    else:
+                        res = "Error: 未知工具"
+
+                    s.update(label="✅ 数据获取完毕", state="complete")
+
+                st.session_state.messages.append({"role": "tool", "content": res, "tool_call_id": call.id})
+
+                msgs.append(msg.model_dump())
+                msgs.append({"role": "tool", "content": res, "tool_call_id": call.id})
+
+                final = client.chat.completions.create(
+                    model="Qwen/Qwen2.5-72B-Instruct",
+                    messages=msgs,
+                    temperature=0.3
+                )
+                reply = final.choices[0].message.content
+                st.write(reply)
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+            else:
+                st.write(msg.content)
+                st.session_state.messages.append({"role": "assistant", "content": msg.content})
